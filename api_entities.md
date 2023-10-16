@@ -7,7 +7,7 @@
 Для построения витрины данных с перечисленными выше атрибутами следует изначально извлечь данные из API и выгрузить их в сыром виде в staging слой as-is, то есть они должны оставаться в том же JSON формате. Далее необходимо преобразовать и перенести эти данные в Detailed Data Store, где данные будут уже разбиты на определенные колонки соответствующего типа.
 В слое DDS уже находятся следующие нужные для витрины таблицы: `dm_orders`, `dm_timetamps`. Для построения витрины эти сущности надо дополнить (новыми колонками) и добавить новые сущности: `deliveries`, `couriers`. Таблица `dm_restaurants` содержит актуальные данные по все четырем ресторанам (было проверено выгрузкой из API, что новых ресторанов не нашлось), поэтому было принято решение оставить эту таблицу без изменения. 
 
-DDL запросы для дополнения таблицы `dm_orders`:
+### DDL запросы для дополнения таблицы `dm_orders`:
 ```postgresql
 alter table dds.dm_orders add column courier_id text references stg.couriers(courier_id);  
 update dds.dm_orders ord set courier_id=d.courier_id from stg.deliveries d where d.order_id=ord.order_key;  
@@ -17,8 +17,10 @@ update dds.dm_orders ord set order_cost=cast(s.object_value::json ->> 'cost' as 
 ```
 Новые таблицы в слое DDS, необходимые для заполнения витрины: `dds.couriers`,`dds.deliveries`. Данные в нее переносятся из staging слоя соответствующих сущностей. Происходит извлечение каждого ключа в качестве наименования атрибута и присвоение ему значения из формата JSON.
 
+### Графическое представление ETL-процесса
 ![image](https://github.com/MatthewS-M/de-project-sprint-5/assets/117388645/38180d6f-0322-4bc2-b3da-715501d20fdd)
 
+### Наполнение витрины `cdm.dm_courier_ledger`
 | id | courier\_id | courier\_name | settlement\_year | settlement\_month | orders\_count | orders\_total\_sum | rate\_avg | order\_processing\_fee | courier\_order\_sum | courier\_tips\_sum | courier\_reward\_sum |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | 201 | 0aevuwjtk3ubqt542prpj4h | Анна Орлова | 2023 | 10 | 11 | 50770.00 | 5.00 | 12692.50 | 12651.20 | 7615.00 | 19885.45 |
