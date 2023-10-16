@@ -16,3 +16,6 @@ alter table dds.dm_orders add column order_cost numeric(14,2);
 update dds.dm_orders ord set order_cost=cast(s.object_value::json ->> 'cost' as numeric(14,2)) from stg.ordersystem_orders as s where s.object_id=ord.order_key;
 ```
 Новые таблицы в слое DDS, необходимые для заполнения витрины: `dds.couriers`,`dds.deliveries`. Данные в нее переносятся из staging слоя соответствующих сущностей. Происходит извлечение каждого ключа в качестве наименования атрибута и присвоение ему значения из формата JSON.
+
+![image](https://github.com/MatthewS-M/de-project-sprint-5/assets/117388645/38180d6f-0322-4bc2-b3da-715501d20fdd)
+
