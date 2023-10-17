@@ -18,4 +18,6 @@ from dds.deliveries del left join dds.couriers cour using (courier_id)
     join dds.dm_timestamps t on d_ord.timestamp_id=t.id
     join courier_order_sum os on os.courier_id=del.courier_id
 where order_status='CLOSED'
-group by 1,2,3,4,9;
+group by 1,2,3,4,9
+on CONFLICT (courier_id, settlement_year, settlement_month) do update
+set courier_id=EXCLUDED.courier_id, settlement_year=EXCLUDED.settlement_year, settlement_month=EXCLUDED.settlement_month;
