@@ -10,6 +10,6 @@ create table if not exists cdm.dm_courier_ledger (
     order_processing_fee numeric(14,2),
     courier_order_sum numeric(14,2),
     courier_tips_sum numeric(14,2),
-    courier_reward_sum numeric(14,2)
+    courier_reward_sum numeric(14,2),
+    CONSTRAINT courier_id_year_month_unique unique(courier_id, settlement_year, settlement_year)
 );
-truncate table cdm.dm_courier_ledger;
