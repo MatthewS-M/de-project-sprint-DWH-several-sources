@@ -18,7 +18,8 @@ update dds.dm_orders ord set order_cost=cast(s.object_value::json ->> 'cost' as 
 Новые таблицы в слое DDS, необходимые для заполнения витрины: `dds.couriers`,`dds.deliveries`. Данные в нее переносятся из staging слоя соответствующих сущностей. Происходит извлечение каждого ключа в качестве наименования атрибута и присвоение ему значения из формата JSON.
 
 ### Графическое представление ETL-процесса
-![image](https://github.com/MatthewS-M/de-project-sprint-5/assets/117388645/38180d6f-0322-4bc2-b3da-715501d20fdd)
+![image](https://github.com/MatthewS-M/de-project-sprint-5/assets/117388645/2a7dd2f0-2f33-4e99-bac9-da18216a55e5)
+
 
 ### Наполнение витрины `cdm.dm_courier_ledger`
 | id | courier\_id | courier\_name | settlement\_year | settlement\_month | orders\_count | orders\_total\_sum | rate\_avg | order\_processing\_fee | courier\_order\_sum | courier\_tips\_sum | courier\_reward\_sum |
