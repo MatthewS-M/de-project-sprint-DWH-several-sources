@@ -9,6 +9,7 @@ import pendulum
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.providers.postgres.operators.postgres import PostgresOperator
+from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.hooks.base import BaseHook
 from airflow.hooks.http_hook import HttpHook
 from airflow.models.xcom import XCom
@@ -34,8 +35,8 @@ headers = {
 task_logger = logging.getLogger("airflow.task")
 
 conn_id = 'PG_WAREHOUSE_CONNECTION'
-psql_conn = BaseHook.get_connection(conn_id)
-conn = psycopg2.connect(f"dbname='{psql_conn.schema}' port='{psql_conn.port}' user='{psql_conn.login}' host='{psql_conn.host}' password='{psql_conn.password}'")
+dwh_hook = PostgresHook(conn_id)
+conn = dwh_hook.get_conn()
 cur = conn.cursor()
 
 def extract_restaurants_data(ti,base_url_rest, headers):
@@ -60,44 +61,45 @@ def extract_couriers_data(ti,base_url_cour, headers):
     ti.xcom_push(key='courier_data', value=response_dict)
 
 def extract_deliveries_data(ti,base_url_del, headers):
-    response = requests.get(f'{base_url_del}?&from=2023-10-08 00:00:00&to=2023-10-15 00:00:00&sort_field=delivery_id&sort_direction=asc&limit=50&offset=0',headers=headers)
+    response = requests.get(f'{base_url_del}?&from={(datetime.now() - timedelta(1)).strftime("%Y-%m-%d %H:%M:%S")}&sort_field=delivery_id&sort_direction=asc&limit=50',headers=headers)
     response_dict = json.loads(response.content)
-    for offset_step in range(50, 3000, 50):
-        response = requests.get(f'{base_url_del}?&from=2023-10-08 00:00:00&to=2023-10-16 00:00:00&sort_field=delivery_id&sort_direction=asc&limit=50&offset={offset_step}',headers=headers)
-        response.raise_for_status()
-        response_dict = response_dict + json.loads(response.content)
+    # flag = 1 if response_dict else 0
+    # for offset_step in range(50, 3000, 50):
+    #     response = requests.get(f'{base_url_del}?&from=2023-10-08 00:00:00&to=2023-10-16 00:00:00&sort_field=delivery_id&sort_direction=asc&limit=50&offset={offset_step}',headers=headers)
+    #     response.raise_for_status()
+    #     response_step_dict = 1 if json.loads(response.content) else 0
+    #     response_dict = response_dict + json.loads(response.content)
     task_logger.info(f'Response is {response.content}')
     ti.xcom_push(key='delivery_data', value=response_dict)
 
 def load_to_stg_restaurants(ti,cur):
     data = ti.xcom_pull(key='restaurant_data')
-    cur.execute("drop table if exists stg.restaurants cascade;")
-    cur.execute("create table if not exists stg.restaurants(id serial, restaurant_id text, object_value json);")
+    cur.execute("create table if not exists stg.restaurants(id serial, restaurant_id text, object_value json, constraint restaurant_id_unique unique(restaurant_id));")
     for each in data:
         task_logger.warning(json.dumps(each,ensure_ascii=False))
-        cur.execute("insert into stg.restaurants(restaurant_id, object_value) values(%(restaurant_id)s, %(object_value)s) ;",{"restaurant_id":each["_id"],"object_value":json.dumps(each, ensure_ascii=False)})
+        cur.execute("""insert into stg.restaurants(restaurant_id, object_value) values(%(restaurant_id)s, %(object_value)s) 
+                    on conflict (restaurant_id) do update 
+                    set restaurant_id = EXCLUDED.restaurant_id;""",{"restaurant_id":each["_id"],"object_value":json.dumps(each, ensure_ascii=False)})
     conn.commit()
 
 def load_to_stg_couriers(ti,cur):
     data = ti.xcom_pull(key='courier_data')
-    cur.execute("drop table if exists stg.couriers cascade;")
-    cur.execute("create table if not exists stg.couriers(id serial, courier_id text, object_value json);")
+    cur.execute("create table if not exists stg.couriers(id serial, courier_id text, object_value json, constraint courier_id_unique unique(courier_id));")
     for each in data:
-        cur.execute("insert into stg.couriers(courier_id, object_value) values(%(courier_id)s, %(object_value)s);",{"courier_id":each["_id"],"object_value":json.dumps(each, ensure_ascii=False)})
+        cur.execute("insert into stg.couriers(courier_id, object_value) values(%(courier_id)s, %(object_value)s) on conflict (courier_id) do update set courier_id=EXCLUDED.courier_id;",{"courier_id":each["_id"],"object_value":json.dumps(each, ensure_ascii=False)})
     conn.commit()
 
 def load_to_stg_deliveries(ti,cur):
     data = ti.xcom_pull(key='delivery_data')
-    cur.execute("drop table if exists stg.deliveries cascade;")
-    cur.execute("create table if not exists stg.deliveries(id serial, delivery_id text, object_value json, update_ts timestamp);")
+    # cur.execute("drop table if exists stg.deliveries cascade;")
+    cur.execute("create table if not exists stg.deliveries(id serial, delivery_id text, object_value json, update_ts timestamp, constraint delivery_id_unique unique(delivery_id));")
     for each in data:
-        cur.execute("insert into stg.deliveries(delivery_id, object_value) values(%(delivery_id)s, %(object_value)s);",{"delivery_id":each["delivery_id"],"object_value":json.dumps(each, ensure_ascii=False)})
+        cur.execute("insert into stg.deliveries(delivery_id, object_value, update_ts) values(%(delivery_id)s, %(object_value)s, cast(%(update_ts)s as timestamp)) on conflict (delivery_id) do update set delivery_id=EXCLUDED.delivery_id;",{"delivery_id":each["delivery_id"],"object_value":json.dumps(each, ensure_ascii=False), "update_ts":each["order_ts"]})
     conn.commit()
     cur.close()
     conn.close()
 
 def transform_to_dds_restaurants(cur):
-    cur.execute("drop table if exists dds.restaurants cascade;")
     cur.execute("create table if not exists dds.restaurants(id serial primary key, restaurant_id text, restaurant_name text, constraint id_name_unique unique(restaurant_id, restaurant_name));")
     cur.execute("""insert into dds.restaurants(restaurant_id, restaurant_name) 
                 select object_value ->> '_id', object_value ->> 'name' from stg.restaurants 
@@ -107,7 +109,6 @@ def transform_to_dds_restaurants(cur):
     conn.commit()
 
 def transform_to_dds_couriers(cur):
-    cur.execute("drop table if exists dds.couriers cascade;")
     cur.execute("create table if not exists dds.couriers(id serial primary key, courier_id text, courier_name text, constraint cour_id_name_unique unique(courier_id, courier_name));")
     cur.execute("""insert into dds.couriers(courier_id, courier_name) 
                 select object_value ->> '_id', object_value ->> 'name' from stg.couriers 
@@ -117,10 +118,10 @@ def transform_to_dds_couriers(cur):
     conn.commit()
 
 def transform_to_dds_deliveries(cur):
-    cur.execute("drop table if exists dds.deliveries cascade;")
+    # cur.execute("drop table if exists dds.deliveries cascade;")
     cur.execute("create table if not exists dds.deliveries(id serial primary key, delivery_id text, order_id text, order_ts timestamp, courier_id text, address text, delivery_ts timestamp, rate integer check (rate>=0 and rate <=5), tip_sum bigint, constraint delivery_courier_order_ids_unique unique(delivery_id, order_id, courier_id));")
     cur.execute("""insert into dds.deliveries(delivery_id, order_id, order_ts, courier_id, address, delivery_ts, rate, tip_sum) 
-                select object_value ->> '_id', object_value ->> 'order_id', cast(object_value ->> 'order_ts' as timestamp), object_value ->> 'courier_id', object_value ->> 'address', cast(object_value ->> 'delivery_ts' as timestamp), cast(object_value ->> 'rate' as integer), cast(object_value ->> 'tip_sum' as bigint) from stg.deliveries  
+                select object_value ->> '_id', object_value ->> 'order_id', cast(object_value ->> 'order_ts' as timestamp), object_value ->> 'courier_id', object_value ->> 'address', cast(object_value ->> 'delivery_ts' as timestamp), cast(object_value ->> 'rate' as integer), cast(object_value ->> 'tip_sum' as bigint) from stg.deliveries sd where sd.delivery_id not in (select delivery_id from dds.deliveries) -- пропускаем те доставки, которые уже загружены в dds
                 on conflict (delivery_id, order_id, courier_id) do update 
                 set order_id=EXCLUDED.order_id,
                     delivery_id=EXCLUDED.delivery_id,
@@ -133,7 +134,7 @@ dag = DAG(
     dag_id='dwh_reload',
     schedule_interval='*/15 * * * *',
     start_date=pendulum.datetime(2023, 10, 9, tz="UTC"),
-    catchup=True,
+    catchup=False,
     dagrun_timeout=timedelta(minutes=60),
     is_paused_upon_creation=True
 )
