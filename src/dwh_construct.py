@@ -60,17 +60,20 @@ def extract_couriers_data(ti,base_url_cour, headers):
     task_logger.info(f'Response is {response_dict}')
     ti.xcom_push(key='courier_data', value=response_dict)
 
-def extract_deliveries_data(ti,base_url_del, headers):
-    response = requests.get(f'{base_url_del}?&from={(datetime.now() - timedelta(1)).strftime("%Y-%m-%d %H:%M:%S")}&sort_field=delivery_id&sort_direction=asc&limit=50',headers=headers)
-    response_dict = json.loads(response.content)
-    # flag = 1 if response_dict else 0
-    # for offset_step in range(50, 3000, 50):
-    #     response = requests.get(f'{base_url_del}?&from=2023-10-08 00:00:00&to=2023-10-16 00:00:00&sort_field=delivery_id&sort_direction=asc&limit=50&offset={offset_step}',headers=headers)
-    #     response.raise_for_status()
-    #     response_step_dict = 1 if json.loads(response.content) else 0
-    #     response_dict = response_dict + json.loads(response.content)
+def extract_deliveries_data(ti,base_url_del, headers, ts_template):
+    dict = []
+    flag = 0 if dict else 1
+    offset = 0
+    while flag:
+        task_logger.warning(f'Response is {ts_template}')
+        response = requests.get(f'{base_url_del}?&from={ts_template} 00:00:00&sort_field=delivery_id&sort_direction=asc&limit=50&offset={offset}',headers=headers)
+        task_logger.warning(f'Response is {response.content}')
+        response_dict = json.loads(response.content)
+        dict = dict + response_dict
+        offset += 50
+        flag = 1 if response_dict else 0
     task_logger.info(f'Response is {response.content}')
-    ti.xcom_push(key='delivery_data', value=response_dict)
+    ti.xcom_push(key='delivery_data', value=dict)
 
 def load_to_stg_restaurants(ti,cur):
     data = ti.xcom_pull(key='restaurant_data')
@@ -91,7 +94,6 @@ def load_to_stg_couriers(ti,cur):
 
 def load_to_stg_deliveries(ti,cur):
     data = ti.xcom_pull(key='delivery_data')
-    # cur.execute("drop table if exists stg.deliveries cascade;")
     cur.execute("create table if not exists stg.deliveries(id serial, delivery_id text, object_value json, update_ts timestamp, constraint delivery_id_unique unique(delivery_id));")
     for each in data:
         cur.execute("insert into stg.deliveries(delivery_id, object_value, update_ts) values(%(delivery_id)s, %(object_value)s, cast(%(update_ts)s as timestamp)) on conflict (delivery_id) do update set delivery_id=EXCLUDED.delivery_id;",{"delivery_id":each["delivery_id"],"object_value":json.dumps(each, ensure_ascii=False), "update_ts":each["order_ts"]})
@@ -121,7 +123,7 @@ def transform_to_dds_deliveries(cur):
     # cur.execute("drop table if exists dds.deliveries cascade;")
     cur.execute("create table if not exists dds.deliveries(id serial primary key, delivery_id text, order_id text, order_ts timestamp, courier_id text, address text, delivery_ts timestamp, rate integer check (rate>=0 and rate <=5), tip_sum bigint, constraint delivery_courier_order_ids_unique unique(delivery_id, order_id, courier_id));")
     cur.execute("""insert into dds.deliveries(delivery_id, order_id, order_ts, courier_id, address, delivery_ts, rate, tip_sum) 
-                select object_value ->> '_id', object_value ->> 'order_id', cast(object_value ->> 'order_ts' as timestamp), object_value ->> 'courier_id', object_value ->> 'address', cast(object_value ->> 'delivery_ts' as timestamp), cast(object_value ->> 'rate' as integer), cast(object_value ->> 'tip_sum' as bigint) from stg.deliveries sd where sd.delivery_id not in (select delivery_id from dds.deliveries) -- пропускаем те доставки, которые уже загружены в dds
+                select sd.delivery_id, object_value ->> 'order_id', cast(object_value ->> 'order_ts' as timestamp), object_value ->> 'courier_id', object_value ->> 'address', cast(object_value ->> 'delivery_ts' as timestamp), cast(object_value ->> 'rate' as integer), cast(object_value ->> 'tip_sum' as bigint) from stg.deliveries sd where sd.delivery_id not in (select delivery_id from dds.deliveries) -- пропускаем те доставки, которые уже загружены в dds
                 on conflict (delivery_id, order_id, courier_id) do update 
                 set order_id=EXCLUDED.order_id,
                     delivery_id=EXCLUDED.delivery_id,
@@ -132,9 +134,9 @@ def transform_to_dds_deliveries(cur):
 
 dag = DAG(
     dag_id='dwh_reload',
-    schedule_interval='*/15 * * * *',
+    schedule_interval='@daily',
     start_date=pendulum.datetime(2023, 10, 9, tz="UTC"),
-    catchup=False,
+    catchup=True,
     dagrun_timeout=timedelta(minutes=60),
     is_paused_upon_creation=True
 )
@@ -166,7 +168,8 @@ extract_deliveries = PythonOperator(
     python_callable=extract_deliveries_data,
     op_kwargs={  
         'base_url_del': base_url_del,
-        'headers': headers
+        'headers': headers,
+        'ts_template': '{{ds}}'
     },
     do_xcom_push=True,
     dag=dag
